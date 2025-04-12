@@ -1,8 +1,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from dotenv import load_dotenv
+import os
 
-TOKEN = '7533167948:AAGBrlpf1zMrN_WGWut64zM8oMSgt6F6KaI'
+load_dotenv()
 
+TOKEN = os.environ.get("TOKEN")
 
 # Команда /menu
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
