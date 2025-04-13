@@ -58,7 +58,7 @@ async def handle_color_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
                              ["Перевернутый треугольник", " Треугольник"]]
     chat_id = update.effective_chat.id
     photo_path = "shape_type.jpeg"  # Укажите путь к файлу
-    caption = "мы сейчас тут"
+    caption = "Дальше пока что не делал"
     reply_markup = ReplyKeyboardMarkup(
         color_types_keyboard,
         resize_keyboard=True,
