@@ -1,4 +1,4 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, MenuButtonCommands, BotCommand, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
 from dotenv import load_dotenv
 import os
@@ -13,9 +13,8 @@ TOKEN = os.environ.get("TOKEN")
     SHOWING_SKIRT,  # Показ юбок
     SHOWING_BLOUSE,  # Показ блузок
     SHOWING_JACKET,  # Показ курток
-    SHOWING_PANTS,   #Показ трусов
     FINAL_STEP  # Завершение
-) = range()  # Создаем 6 состояний
+) = range(6)
 
 # Словарь рекомендаций
 CLOTHING_RECOMMENDATIONS = {
@@ -32,18 +31,59 @@ CLOTHING_RECOMMENDATIONS = {
 }
 
 
+async def post_init(application):
+    """Установка команд меню после инициализации бота"""
+    commands = [
+        BotCommand("start", "Начать диалог с ботом"),
+        BotCommand("help", "Помощь по использованию бота"),
+        BotCommand("reset", "Сбросить текущий диалог"),
+        BotCommand("cancel", "Отменить текущее действие")
+    ]
+    await application.bot.set_my_commands(commands)
+    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало диалога, возвращаем первое состояние"""
+    """Начало диалога"""
     keyboard = [["Определить цветотип"]]
     await update.message.reply_text(
-        "Привет! Пора заняться внешним видом.",
+        "Привет! Я помогу подобрать одежду по вашему типу фигуры.\n"
+        "Используйте команды:\n"
+        "/start - начать заново\n"
+        "/help - помощь\n"
+        "/reset - сбросить диалог",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
     return CHOOSING_COLOR
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показ помощи"""
+    help_text = (
+        "🤖 <b>Помощь по боту</b>\n\n"
+        "Этот бот помогает подобрать одежду по вашему типу фигуры.\n"
+        "Доступные команды:\n"
+        "/start - начать диалог\n"
+        "/help - эта справка\n"
+        "/reset - сбросить текущий диалог\n"
+        "/cancel - отменить текущее действие\n\n"
+        "Просто следуйте инструкциям бота!"
+    )
+    await update.message.reply_html(help_text)
+
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сброс диалога"""
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Диалог сброшен. Начните заново с /start",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
 async def handle_color_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора цветотипа, возвращаем то же состояние"""
+    """Обработка выбора цветотипа"""
     await update.message.reply_text(
         "Выберите цветотип:",
         reply_markup=ReplyKeyboardMarkup([["Теплый", "Холодный"]], resize_keyboard=True)
@@ -52,7 +92,7 @@ async def handle_color_type(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def handle_color_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбранного цветотипа, переходим к выбору фигуры"""
+    """Обработка выбранного цветотипа"""
     context.user_data['color_type'] = update.message.text
     await update.message.reply_text(
         "Теперь определим тип фигуры:",
@@ -61,23 +101,22 @@ async def handle_color_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             resize_keyboard=True
         )
     )
-    return CHOOSING_SHAPE  # Важно: возвращаем следующее состояние
+    return CHOOSING_SHAPE
 
 
 async def handle_shape_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка выбора типа фигуры, начинаем показ рекомендаций"""
+    """Обработка выбора типа фигуры"""
     shape = update.message.text
     context.user_data['shape_type'] = shape
-    context.user_data['current_step'] = SHOWING_SKIRT  # Начинаем с юбок
+    context.user_data['current_step'] = SHOWING_SKIRT
     return await show_recommendation(update, context)
 
 
 async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Общая функция показа рекомендаций"""
+    """Показ рекомендаций по одежде"""
     shape = context.user_data['shape_type']
     current_step = context.user_data['current_step']
 
-    # Определяем тип одежды для текущего шага
     if current_step == SHOWING_SKIRT:
         item_type = "skirt"
         next_step = SHOWING_BLOUSE
@@ -102,7 +141,7 @@ async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
         )
 
-    return current_step  # Возвращаем текущее состояние
+    return current_step
 
 
 async def handle_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -115,7 +154,7 @@ async def handle_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['current_step'] = SHOWING_JACKET
     else:
         await update.message.reply_text(
-            "Рекомендации завершены!",
+            "Рекомендации завершены! Используйте /start для нового диалога.",
             reply_markup=ReplyKeyboardRemove()
         )
         return FINAL_STEP
@@ -124,18 +163,24 @@ async def handle_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик отмены"""
+    """Отмена текущего действия"""
     await update.message.reply_text(
-        'Диалог прерван. Начните заново с /start',
+        'Действие отменено. Используйте /start для начала.',
         reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
 
 
 def main():
-    print("Бот запущен...")
-    application = ApplicationBuilder().token(TOKEN).build()
+    """Основная функция запуска бота"""
+    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
+    # Обработчики команд
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("reset", reset_command))
+    application.add_handler(CommandHandler("cancel", cancel))
+
+    # Обработчик диалога
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -159,8 +204,8 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
-
     application.add_handler(conv_handler)
+
     application.run_polling()
 
 
