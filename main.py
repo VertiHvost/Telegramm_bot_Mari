@@ -1,88 +1,167 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, Application, \
-    MessageHandler, filters
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 TOKEN = os.environ.get("TOKEN")
 
-# Функция команды /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Состояния диалога
+(
+    CHOOSING_COLOR,  # Выбор цветотипа
+    CHOOSING_SHAPE,  # Выбор типа фигуры
+    SHOWING_SKIRT,  # Показ юбок
+    SHOWING_BLOUSE,  # Показ блузок
+    SHOWING_JACKET,  # Показ курток
+    FINAL_STEP  # Завершение
+) = range(6)  # Создаем 6 состояний
+
+# Словарь рекомендаций
+CLOTHING_RECOMMENDATIONS = {
+    "Песочные часы": {
+        "skirt": {"photo": "hourglass_skirt.jpg", "text": "Юбка-карандаш подчеркнет вашу талию"},
+        "blouse": {"photo": "hourglass_blouse.jpg", "text": "Приталенная блузка идеально подойдет"},
+        "jacket": {"photo": "hourglass_jacket.jpg", "text": "Жакет с поясом подчеркнет пропорции"}
+    },
+    "Круг": {
+        "skirt": {"photo": "round_skirt.jpg", "text": "Юбка А-силуэта визуально вытянет фигуру"},
+        "blouse": {"photo": "round_blouse.jpg", "text": "Блузка с V-образным вырезом стройнит"},
+        "jacket": {"photo": "round_jacket.jpg", "text": "Прямой жакет создаст стройный силуэт"}
+    }
+}
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало диалога, возвращаем первое состояние"""
     keyboard = [["Определить цветотип"]]
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
     await update.message.reply_text(
-        "Привет! Пора заняться внешним видом.\n"
-        "Для начала необходимо определить три параметра:\n"
-        "- Твой цветотип\n"
-        "- Форма головы\n"
-        "- Тип фигуры",
-        reply_markup=reply_markup
+        "Привет! Пора заняться внешним видом.",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
+    return CHOOSING_COLOR
 
-# Функция для обработки нажатия "Определить цветотип"
-async def handle_color_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # Создаем новую клавиатуру с вариантами цветотипов
-    color_types_keyboard = [["Теплый", "Холодный"]]
-    chat_id = update.effective_chat.id
-    photo_path = "color_type.jpg"  # Укажите путь к файлу
-    caption = "Вот наглядный пример как определить! 🌟"
-    reply_markup = ReplyKeyboardMarkup(
-        color_types_keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=True
+async def handle_color_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора цветотипа, возвращаем то же состояние"""
+    await update.message.reply_text(
+        "Выберите цветотип:",
+        reply_markup=ReplyKeyboardMarkup([["Теплый", "Холодный"]], resize_keyboard=True)
     )
-    await context.bot.send_photo(
-        chat_id=chat_id,
-        photo=open(photo_path, "rb"),  # Открываем файл в бинарном режиме
-        caption=caption,
-        reply_markup=reply_markup
-    )
+    return CHOOSING_COLOR
 
-# Функция для обработки выбора цветотипа
-async def handle_color_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Создаем новую клавиатуру с вариантами цветотипов
-    chosen_color = update.message.text
-    await update.message.reply_text(f"Обычно людям с {chosen_color.lower()} типом кожы чаще"
-                                        " улыбаются люди 😊")
-    await update.message.reply_text("Теперь давай определим твой тпи фигуры"
-                                    ", это достаточно прост. Необходимы: \n"
-                                    "1. Зеркало\n"
-                                    "2. Подсказка, которую прикрепила снизу")
-    color_types_keyboard = [["Песочные часы"], ["Круг", "Квадрат"],
-                             ["Перевернутый треугольник", " Треугольник"]]
-    chat_id = update.effective_chat.id
-    photo_path = "shape_type.jpeg"  # Укажите путь к файлу
-    caption = "Дальше пока что не делал"
-    reply_markup = ReplyKeyboardMarkup(
-        color_types_keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    await context.bot.send_photo(
-        chat_id=chat_id,
-        photo=open(photo_path, "rb"),  # Открываем файл в бинарном режиме
-        caption=caption,
-        reply_markup=reply_markup
-    )
 
+async def handle_color_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбранного цветотипа, переходим к выбору фигуры"""
+    context.user_data['color_type'] = update.message.text
+    await update.message.reply_text(
+        "Теперь определим тип фигуры:",
+        reply_markup=ReplyKeyboardMarkup(
+            [["Песочные часы", "Круг"], ["Прямоугольник", "Треугольник"]],
+            resize_keyboard=True
+        )
+    )
+    return CHOOSING_SHAPE  # Важно: возвращаем следующее состояние
+
+
+async def handle_shape_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора типа фигуры, начинаем показ рекомендаций"""
+    shape = update.message.text
+    context.user_data['shape_type'] = shape
+    context.user_data['current_step'] = SHOWING_SKIRT  # Начинаем с юбок
+    return await show_recommendation(update, context)
+
+
+async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Общая функция показа рекомендаций"""
+    shape = context.user_data['shape_type']
+    current_step = context.user_data['current_step']
+
+    # Определяем тип одежды для текущего шага
+    if current_step == SHOWING_SKIRT:
+        item_type = "skirt"
+        next_step = SHOWING_BLOUSE
+    elif current_step == SHOWING_BLOUSE:
+        item_type = "blouse"
+        next_step = SHOWING_JACKET
+    else:
+        item_type = "jacket"
+        next_step = FINAL_STEP
+
+    recommendation = CLOTHING_RECOMMENDATIONS[shape][item_type]
+
+    try:
+        await update.message.reply_photo(
+            photo=open(recommendation["photo"], "rb"),
+            caption=recommendation["text"],
+            reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
+        )
+    except FileNotFoundError:
+        await update.message.reply_text(
+            recommendation["text"],
+            reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
+        )
+
+    return current_step  # Возвращаем текущее состояние
+
+
+async def handle_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка кнопки 'Дальше'"""
+    current_step = context.user_data['current_step']
+
+    if current_step == SHOWING_SKIRT:
+        context.user_data['current_step'] = SHOWING_BLOUSE
+    elif current_step == SHOWING_BLOUSE:
+        context.user_data['current_step'] = SHOWING_JACKET
+    else:
+        await update.message.reply_text(
+            "Рекомендации завершены!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return FINAL_STEP
+
+    return await show_recommendation(update, context)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработчик отмены"""
+    await update.message.reply_text(
+        'Диалог прерван. Начните заново с /start',
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
 
 
 def main():
-    application = Application.builder().token(TOKEN).build()
-    print('Бот запущен...')
+    print("Бот запущен...")
+    application = ApplicationBuilder().token(TOKEN).build()
 
-    # Обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.Text("Определить цветотип"), handle_color_type))
-    application.add_handler(MessageHandler(filters.Text(["Теплый", "Холодный"]), handle_color_choice))
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CHOOSING_COLOR: [
+                MessageHandler(filters.Text("Определить цветотип"), handle_color_type),
+                MessageHandler(filters.Text(["Теплый", "Холодный"]), handle_color_choice)
+            ],
+            CHOOSING_SHAPE: [
+                MessageHandler(filters.Text(["Песочные часы", "Круг", "Прямоугольник", "Треугольник"]),
+                               handle_shape_choice)
+            ],
+            SHOWING_SKIRT: [
+                MessageHandler(filters.Text("Дальше ➡️"), handle_next_step)
+            ],
+            SHOWING_BLOUSE: [
+                MessageHandler(filters.Text("Дальше ➡️"), handle_next_step)
+            ],
+            SHOWING_JACKET: [
+                MessageHandler(filters.Text("Дальше ➡️"), handle_next_step)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
 
+    application.add_handler(conv_handler)
     application.run_polling()
+
 
 if __name__ == "__main__":
     main()
