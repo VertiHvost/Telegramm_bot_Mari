@@ -13,8 +13,9 @@ TOKEN = os.environ.get("TOKEN")
     SHOWING_SKIRT,  # Показ юбок
     SHOWING_BLOUSE,  # Показ блузок
     SHOWING_JACKET,  # Показ курток
+    SHOWING_PANTS,   #Показ трусов
     FINAL_STEP  # Завершение
-) = range(6)  # Создаем 6 состояний
+) = range()  # Создаем 6 состояний
 
 # Словарь рекомендаций
 CLOTHING_RECOMMENDATIONS = {
