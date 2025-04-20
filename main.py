@@ -44,7 +44,8 @@ async def post_init(application):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало диалога"""
+    """Начало диалога с очисткой предыдущего состояния"""
+    context.user_data.clear()  # Очищаем предыдущие данные
     keyboard = [["Определить цветотип"]]
     await update.message.reply_text(
         "Привет! Я помогу подобрать одежду по вашему типу фигуры.\n"
@@ -113,7 +114,7 @@ async def handle_shape_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показ рекомендаций по одежде"""
+    """Показ рекомендаций по одежде с обработкой ошибок"""
     shape = context.user_data['shape_type']
     current_step = context.user_data['current_step']
 
@@ -130,17 +131,19 @@ async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE
     recommendation = CLOTHING_RECOMMENDATIONS[shape][item_type]
 
     try:
-        await update.message.reply_photo(
-            photo=open(recommendation["photo"], "rb"),
-            caption=recommendation["text"],
-            reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
-        )
+        with open(recommendation["photo"], "rb") as photo:
+            await update.message.reply_photo(
+                photo=photo,
+                caption=recommendation["text"],
+                reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
+            )
     except FileNotFoundError:
         await update.message.reply_text(
-            recommendation["text"],
+            f"⚠️ Фото не найдено.\n{recommendation['text']}",
             reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
         )
 
+    context.user_data['current_step'] = next_step  # Обновляем шаг заранее
     return current_step
 
 
@@ -148,11 +151,7 @@ async def handle_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Обработка кнопки 'Дальше'"""
     current_step = context.user_data['current_step']
 
-    if current_step == SHOWING_SKIRT:
-        context.user_data['current_step'] = SHOWING_BLOUSE
-    elif current_step == SHOWING_BLOUSE:
-        context.user_data['current_step'] = SHOWING_JACKET
-    else:
+    if current_step == FINAL_STEP:
         await update.message.reply_text(
             "Рекомендации завершены! Используйте /start для нового диалога.",
             reply_markup=ReplyKeyboardRemove()
@@ -173,6 +172,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def main():
     """Основная функция запуска бота"""
+    if not TOKEN:
+        print("Ошибка: TOKEN не найден в .env!")
+        return
+
+    print("Бот запущен...")
     application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     # Обработчики команд
@@ -202,7 +206,10 @@ def main():
                 MessageHandler(filters.Text("Дальше ➡️"), handle_next_step)
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel)]
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start)  # Позволяет перезапустить диалог
+        ]
     )
     application.add_handler(conv_handler)
 
