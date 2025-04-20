@@ -1,7 +1,15 @@
 from telegram import Update, ReplyKeyboardMarkup, MenuButtonCommands, BotCommand, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
 from dotenv import load_dotenv
+from oauth2client.service_account import ServiceAccountCredentials
+
 import os
+import gspread
+
+
+# Настройки Google Sheets
+SHEET_CREDENTIALS = 'credentials.json'  # Файл с ключами доступа
+SHEET_URL = 'https://docs.google.com/spreadsheets/d/14dJ2Bv1QseBRtNbpygGZc0rHZXVzE55z_3Ji40yotNA/edit?gid=0#gid=0'
 
 load_dotenv()
 TOKEN = os.environ.get("TOKEN")
@@ -43,16 +51,45 @@ async def post_init(application):
     await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
+async def is_user_allowed(user_id: int, username: str) -> bool:
+    """Проверяет, есть ли пользователь в белом списке"""
+    try:
+        # Авторизация в Google Sheets
+        scope = ['https://spreadsheets.google.com/feeds',
+                 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(SHEET_CREDENTIALS, scope)
+        client = gspread.authorize(creds)
+
+        # Открытие таблицы
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        users = sheet.get_all_records()
+
+        # Проверка по ID или username
+        for user in users:
+
+            print("id = ", user_id, "  ", user.get('id', ''), "  ", username, "user = ", user)
+            if  username.lower() == user.get('username', '').lower():
+                return True
+        return False
+    except Exception as e:
+        print(f"Ошибка проверки пользователя: {e}")
+        return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало диалога с очисткой предыдущего состояния"""
-    context.user_data.clear()  # Очищаем предыдущие данные
+    """Начало диалога с проверкой доступа"""
+    user = update.effective_user
+
+    if not await is_user_allowed(user.id, user.username):
+        await update.message.reply_text(
+            "⛔ Извините, у вас нет доступа к этому боту.\n"
+            "Обратитесь к администратору для добавления в белый список."
+        )
+        return ConversationHandler.END
+
+    context.user_data.clear()
     keyboard = [["Определить цветотип"]]
     await update.message.reply_text(
-        "Привет! Я помогу подобрать одежду по вашему типу фигуры.\n"
-        "Используйте команды:\n"
-        "/start - начать заново\n"
-        "/help - помощь\n"
-        "/reset - сбросить диалог",
+        f"Привет, {user.first_name}! Я помогу подобрать одежду по вашему типу фигуры.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
     return CHOOSING_COLOR
