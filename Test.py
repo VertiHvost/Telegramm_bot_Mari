@@ -1,230 +1,257 @@
-# Импорт необходимых библиотек
-import logging  # Для логирования работы бота
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove  # Компоненты Telegram API
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, \
-    ConversationHandler  # Обработчики сообщений
-import gspread  # Для работы с Google Sheets
-from oauth2client.service_account import ServiceAccountCredentials  # Аутентификация в Google API
-import random  # Для генерации случайных чисел (в демо-режиме)
+from telegram import Update, ReplyKeyboardMarkup, MenuButtonCommands, BotCommand, ReplyKeyboardRemove
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
+from dotenv import load_dotenv
+from oauth2client.service_account import ServiceAccountCredentials
 
-# Настройка системы логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',  # Формат логов
-    level=logging.INFO  # Уровень логирования (INFO)
-)
-logger = logging.getLogger(__name__)  # Создание объекта логгера
-
-# Константы состояний для машины состояний (FSM)
-PHOTO, SHOULDERS, WAIST, HIPS = range(4)  # Соответствует 0, 1, 2, 3
+import os
+import gspread
 
 
-# Функция подключения к Google Sheets
-def connect_to_google_sheets():
-    # Области доступа для Google API
-    scope = ['https://spreadsheets.google.com/feeds',
-             'https://www.googleapis.com/auth/drive']
-    # Аутентификация с использованием сервисного аккаунта
-    creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
-    # Авторизация клиента
-    client = gspread.authorize(creds)
-    # Открытие конкретной таблицы по названию
-    return client.open("Рекомендации по одежде").sheet1
+# Настройки Google Sheets
+SHEET_CREDENTIALS = 'credentials.json'  # Файл с ключами доступа
+SHEET_URL = 'https://docs.google.com/spreadsheets/d/14dJ2Bv1QseBRtNbpygGZc0rHZXVzE55z_3Ji40yotNA/edit?gid=0#gid=0'
+
+load_dotenv()
+TOKEN = os.environ.get("TOKEN")
+
+# Состояния диалога
+(
+    CHOOSING_COLOR,  # Выбор цветотипа
+    CHOOSING_SHAPE,  # Выбор типа фигуры
+    SHOWING_SKIRT,  # Показ юбок
+    SHOWING_BLOUSE,  # Показ блузок
+    SHOWING_JACKET,  # Показ курток
+    FINAL_STEP  # Завершение
+) = range(6)
+
+# Словарь рекомендаций
+CLOTHING_RECOMMENDATIONS = {
+    "Песочные часы": {
+        "skirt": {"photo": "hourglass_skirt.jpg", "text": "Юбка-карандаш подчеркнет вашу талию"},
+        "blouse": {"photo": "hourglass_blouse.jpg", "text": "Приталенная блузка идеально подойдет"},
+        "jacket": {"photo": "hourglass_jacket.jpg", "text": "Жакет с поясом подчеркнет пропорции"}
+    },
+    "Круг": {
+        "skirt": {"photo": "round_skirt.jpg", "text": "Юбка А-силуэта визуально вытянет фигуру"},
+        "blouse": {"photo": "round_blouse.jpg", "text": "Блузка с V-образным вырезом стройнит"},
+        "jacket": {"photo": "round_jacket.jpg", "text": "Прямой жакет создаст стройный силуэт"}
+    }
+}
 
 
-# Инициализация подключения к таблице
-sheet = connect_to_google_sheets()
+async def post_init(application):
+    """Установка команд меню после инициализации бота"""
+    commands = [
+        BotCommand("start", "Начать диалог с ботом"),
+        BotCommand("help", "Помощь по использованию бота"),
+        BotCommand("reset", "Сбросить текущий диалог"),
+        BotCommand("cancel", "Отменить текущее действие")
+    ]
+    await application.bot.set_my_commands(commands)
+    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
-# Обработчик команды /start
-def start(update: Update, context: CallbackContext) -> None:
-    # Создание клавиатуры с двумя кнопками
-    reply_keyboard = [['Определить по фото', 'Ввести параметры']]
-
-    # Отправка сообщения с клавиатурой
-    update.message.reply_text(
-        "Привет! Я помогу определить твой тип фигуры и дам рекомендации по одежде.\n"
-        "Выбери способ определения:",
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
-        # Автоматическое изменение размера кнопок
-    )
-
-
-# Начало ветки определения по фото
-def request_photo(update: Update, context: CallbackContext) -> int:
-    # Запрос фото у пользователя
-    update.message.reply_text(
-        "Отправь фото в полный рост в обтягивающей одежде (например, в леггинсах и топе).\n"
-        "Лучше сделать фото на нейтральном фоне без лишних предметов.",
-        reply_markup=ReplyKeyboardRemove()  # Убираем клавиатуру
-    )
-    # Устанавливаем состояние ожидания фото
-    return PHOTO
-
-
-# Обработка полученного фото
-def process_photo(update: Update, context: CallbackContext) -> int:
+async def is_user_allowed(user_id: int, username: str) -> bool:
+    """Проверяет, есть ли пользователь в белом списке"""
     try:
-        # В реальной реализации здесь должен быть анализ фото
-        # В демо-версии просто выбираем случайный тип фигуры
-        body_types = ["Прямоугольник", "Треугольник", "Перевернутый треугольник", "Круг", "Песочные часы"]
-        body_type = random.choice(body_types)
+        # Авторизация в Google Sheets
+        scope = ['https://spreadsheets.google.com/feeds',
+                 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(SHEET_CREDENTIALS, scope)
+        client = gspread.authorize(creds)
 
-        # Отправка рекомендаций
-        send_recommendations(update, context, body_type)
-        # Завершение диалога
-        return ConversationHandler.END
+        # Открытие таблицы
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        users = sheet.get_all_records()
+
+        # Проверка по ID или username
+        for user in users:
+
+            print("id = ", user_id, "  ", user.get('id', ''), "  ", username, "user = ", user)
+            if  username.lower() == user.get('username', '').lower():
+                return True
+        return False
     except Exception as e:
-        # Логирование ошибки
-        logger.error(f"Error processing photo: {e}")
-        update.message.reply_text("Произошла ошибка при обработке фото. Попробуйте еще раз.")
-        return ConversationHandler.END
+        print(f"Ошибка проверки пользователя: {e}")
+        return False
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало диалога с проверкой доступа"""
+    user = update.effective_user
 
-# Начало ветки ввода параметров
-def start_measurements(update: Update, context: CallbackContext) -> int:
-    # Запрос обхвата плеч
-    update.message.reply_text(
-        "Введи обхват плеч в сантиметрах (измерь самую широкую часть):",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    # Установка состояния ожидания плеч
-    return SHOULDERS
-
-
-# Обработка введенных плеч
-def process_shoulders(update: Update, context: CallbackContext) -> int:
-    try:
-        # Сохранение значения плеч в user_data
-        context.user_data['shoulders'] = float(update.message.text)
-        # Запрос обхвата талии
-        update.message.reply_text("Теперь введи обхват талии в сантиметрах:")
-        # Установка состояния ожидания талии
-        return WAIST
-    except ValueError:
-        # Обработка нечислового ввода
-        update.message.reply_text("Пожалуйста, введите число. Например: 95")
-        # Повторное ожидание плеч
-        return SHOULDERS
-
-
-# Обработка введенной талии (аналогично плечам)
-def process_waist(update: Update, context: CallbackContext) -> int:
-    try:
-        context.user_data['waist'] = float(update.message.text)
-        update.message.reply_text("Теперь введи обхват бедер в сантиметрах:")
-        return HIPS
-    except ValueError:
-        update.message.reply_text("Пожалуйста, введите число. Например: 85")
-        return WAIST
-
-
-# Обработка введенных бедер
-def process_hips(update: Update, context: CallbackContext) -> int:
-    try:
-        # Сохранение бедер
-        context.user_data['hips'] = float(update.message.text)
-
-        # Получение всех параметров
-        shoulders = context.user_data['shoulders']
-        waist = context.user_data['waist']
-        hips = context.user_data['hips']
-
-        # Определение типа фигуры
-        body_type = determine_body_type(shoulders, waist, hips)
-        # Отправка рекомендаций
-        send_recommendations(update, context, body_type)
-        # Завершение диалога
-        return ConversationHandler.END
-    except ValueError:
-        update.message.reply_text("Пожалуйста, введите число. Например: 100")
-        return HIPS
-
-
-# Функция определения типа фигуры по параметрам
-def determine_body_type(shoulders, waist, hips):
-    # Расчет соотношений параметров
-    shoulder_hip_ratio = shoulders / hips
-    waist_hip_ratio = waist / hips
-
-    # Логика определения типа по соотношениям
-    if 0.96 <= waist_hip_ratio <= 1.05 and 0.96 <= shoulder_hip_ratio <= 1.05:
-        return "Прямоугольник"
-    elif waist_hip_ratio < 0.75 and shoulder_hip_ratio < 0.85:
-        return "Песочные часы"
-    elif waist_hip_ratio > 0.85 and shoulder_hip_ratio < 0.9:
-        return "Треугольник"
-    elif shoulder_hip_ratio > 1.1:
-        return "Перевернутый треугольник"
-    else:
-        return "Круг"
-
-
-# Функция отправки рекомендаций
-def send_recommendations(update: Update, context: CallbackContext, body_type: str):
-    try:
-        # Поиск строки с рекомендациями в таблице
-        cell = sheet.find(body_type)
-        # Получение всех значений строки
-        row = sheet.row_values(cell.row)
-
-        # Формирование сообщения с рекомендациями
-        recommendations = (
-            f"Ваш тип фигуры: {body_type}\n\n"
-            f"Рекомендации:\n"
-            f"• Нижнее белье: {row[1]}\n"
-            f"• Юбки: {row[2]}\n"
-            f"• Колготки: {row[3]}"
+    if not await is_user_allowed(user.id, user.username):
+        await update.message.reply_text(
+            "⛔ Извините, у вас нет доступа к этому боту.\n"
+            "Обратитесь к администратору для добавления в белый список."
         )
+        return ConversationHandler.END
 
-        # Отправка сообщения пользователю
-        update.message.reply_text(recommendations)
-    except Exception as e:
-        # Обработка ошибок при работе с таблицей
-        logger.error(f"Error getting recommendations: {e}")
-        update.message.reply_text("Не удалось получить рекомендации. Попробуйте позже.")
+    context.user_data.clear()
+    keyboard = [["Определить цветотип"]]
+    await update.message.reply_text(
+        f"Привет, {user.first_name}! Я помогу подобрать одежду по вашему типу фигуры.",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+    return CHOOSING_COLOR
 
 
-# Функция отмены диалога
-def cancel(update: Update, context: CallbackContext) -> int:
-    update.message.reply_text(
-        'Диалог прерван. Начните заново с /start',
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показ помощи"""
+    help_text = (
+        "🤖 <b>Помощь по боту</b>\n\n"
+        "Этот бот помогает подобрать одежду по вашему типу фигуры.\n"
+        "Доступные команды:\n"
+        "/start - начать диалог\n"
+        "/help - эта справка\n"
+        "/reset - сбросить текущий диалог\n"
+        "/cancel - отменить текущее действие\n\n"
+        "Просто следуйте инструкциям бота!"
+    )
+    await update.message.reply_html(help_text)
+
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сброс диалога"""
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Диалог сброшен. Начните заново с /start",
         reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
 
 
-# Основная функция
-def main() -> None:
-    # Создание объекта Updater с токеном бота
-    updater = Updater("YOUR_TELEGRAM_BOT_TOKEN")
-
-    # Получение диспетчера для регистрации обработчиков
-    dispatcher = updater.dispatcher
-
-    # Создание обработчика диалогов
-    conv_handler = ConversationHandler(
-        entry_points=[  # Точки входа в диалог
-            MessageHandler(Filters.regex('^Определить по фото$'), request_photo),
-            MessageHandler(Filters.regex('^Ввести параметры$'), start_measurements)
-        ],
-        states={  # Состояния диалога
-            PHOTO: [MessageHandler(Filters.photo, process_photo)],
-            SHOULDERS: [MessageHandler(Filters.text & ~Filters.command, process_shoulders)],
-            WAIST: [MessageHandler(Filters.text & ~Filters.command, process_waist)],
-            HIPS: [MessageHandler(Filters.text & ~Filters.command, process_hips)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],  # Обработчик отмены
+async def handle_color_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора цветотипа"""
+    await update.message.reply_text(
+        "Выберите цветотип:",
+        reply_markup=ReplyKeyboardMarkup([["Теплый", "Холодный"]], resize_keyboard=True)
     )
-
-    # Регистрация обработчиков
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(conv_handler)
-
-    # Запуск бота
-    updater.start_polling()  # Начало опроса сервера Telegram
-    updater.idle()  # Ожидание новых сообщений
+    return CHOOSING_COLOR
 
 
-# Точка входа
-if __name__ == '__main__':
+async def handle_color_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбранного цветотипа"""
+    context.user_data['color_type'] = update.message.text
+    await update.message.reply_text(
+        "Теперь определим тип фигуры:",
+        reply_markup=ReplyKeyboardMarkup(
+            [["Песочные часы", "Круг"], ["Прямоугольник", "Треугольник"]],
+            resize_keyboard=True
+        )
+    )
+    return CHOOSING_SHAPE
+
+
+async def handle_shape_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора типа фигуры"""
+    shape = update.message.text
+    context.user_data['shape_type'] = shape
+    context.user_data['current_step'] = SHOWING_SKIRT
+    return await show_recommendation(update, context)
+
+
+async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показ рекомендаций по одежде с обработкой ошибок"""
+    shape = context.user_data['shape_type']
+    current_step = context.user_data['current_step']
+
+    if current_step == SHOWING_SKIRT:
+        item_type = "skirt"
+        next_step = SHOWING_BLOUSE
+    elif current_step == SHOWING_BLOUSE:
+        item_type = "blouse"
+        next_step = SHOWING_JACKET
+    else:
+        item_type = "jacket"
+        next_step = FINAL_STEP
+
+    recommendation = CLOTHING_RECOMMENDATIONS[shape][item_type]
+
+    try:
+        with open(recommendation["photo"], "rb") as photo:
+            await update.message.reply_photo(
+                photo=photo,
+                caption=recommendation["text"],
+                reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
+            )
+    except FileNotFoundError:
+        await update.message.reply_text(
+            f"⚠️ Фото не найдено.\n{recommendation['text']}",
+            reply_markup=ReplyKeyboardMarkup([["Дальше ➡️"]], resize_keyboard=True)
+        )
+
+    context.user_data['current_step'] = next_step  # Обновляем шаг заранее
+    return current_step
+
+
+async def handle_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка кнопки 'Дальше'"""
+    current_step = context.user_data['current_step']
+
+    if current_step == FINAL_STEP:
+        await update.message.reply_text(
+            "Рекомендации завершены! Используйте /start для нового диалога.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return FINAL_STEP
+
+    return await show_recommendation(update, context)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена текущего действия"""
+    await update.message.reply_text(
+        'Действие отменено. Используйте /start для начала.',
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
+def main():
+    """Основная функция запуска бота"""
+    if not TOKEN:
+        print("Ошибка: TOKEN не найден в .env!")
+        return
+
+    print("Бот запущен...")
+    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+
+    # Обработчики команд
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("reset", reset_command))
+    application.add_handler(CommandHandler("cancel", cancel))
+
+    # Обработчик диалога
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CHOOSING_COLOR: [
+                MessageHandler(filters.Text("Определить цветотип"), handle_color_type),
+                MessageHandler(filters.Text(["Теплый", "Холодный"]), handle_color_choice)
+            ],
+            CHOOSING_SHAPE: [
+                MessageHandler(filters.Text(["Песочные часы", "Круг", "Прямоугольник", "Треугольник"]),
+                               handle_shape_choice)
+            ],
+            SHOWING_SKIRT: [
+                MessageHandler(filters.Text("Дальше ➡️"), handle_next_step)
+            ],
+            SHOWING_BLOUSE: [
+                MessageHandler(filters.Text("Дальше ➡️"), handle_next_step)
+            ],
+            SHOWING_JACKET: [
+                MessageHandler(filters.Text("Дальше ➡️"), handle_next_step)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start)  # Позволяет перезапустить диалог
+        ]
+    )
+    application.add_handler(conv_handler)
+
+    application.run_polling()
+
+
+if __name__ == "__main__":
     main()
